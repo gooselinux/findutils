@@ -1,0 +1,1468 @@
+ ChangeLog                                        |  150 ++++++++++++++++
+ NEWS                                             |   19 ++
+ find/defs.h                                      |   14 +-
+ find/find.c                                      |   69 +-------
+ find/finddata.c                                  |   12 +-
+ find/ftsfind.c                                   |   84 +++-------
+ find/parser.c                                    |   35 ++---
+ find/pred.c                                      |  199 +++++++++++++++++-----
+ find/testsuite/Makefile.am                       |    7 +
+ find/testsuite/config/unix.exp                   |    9 +
+ find/testsuite/find.gnu/execdir-multiple.exp     |   56 ++++++
+ find/testsuite/find.gnu/execdir-multiple.xo      |   24 +++
+ find/testsuite/find.gnu/execdir-pwd1.exp         |   20 +++
+ find/testsuite/find.gnu/sv-bug-27563-execdir.exp |    6 +
+ find/testsuite/find.gnu/sv-bug-27563-execdir.xo  |    1 +
+ find/testsuite/find.posix/sv-bug-27563-exec.exp  |    6 +
+ find/testsuite/find.posix/sv-bug-27563-exec.xo   |    1 +
+ find/util.c                                      |   89 ++++++++--
+ import-gnulib.config                             |    1 +
+ lib/dircallback.c                                |   36 ++++-
+ lib/dircallback.h                                |    5 +-
+ lib/listfile.c                                   |    2 +-
+ lib/savedirinfo.c                                |    2 +-
+ 23 files changed, 621 insertions(+), 226 deletions(-)
+
+diff --git a/ChangeLog b/ChangeLog
+index be93846..97b1b7c 100644
+--- a/ChangeLog
++++ b/ChangeLog
+@@ -1,3 +1,153 @@
++2010-05-24  Kamil Dudka  <kdudka@redhat.com>
++
++	Fix Savannah bug #29949, -execdir does not change working directory
++	* find/pred.c (record_exec_dir): Do not throw the execdir when not
++	working in the cumulative mode.
++	* find/testsuite/find.gnu/execdir-multiple.exp: Add a test-case for
++	the bug #29949.
++	* NEWS: Mention this bugfix.
++
++2010-04-11  James Youngman  <jay@gnu.org>
++
++	Add a test case for Savannah bug 27563 (-L breaks -execdir).
++	* find/testsuite/Makefile.am (EXTRA_DIST_EXP): Add
++	find.gnu/sv-bug-27563-execdir.exp and
++	find.posix/sv-bug-27563-exec.exp.
++	(EXTRA_DIST_XO): Add find.gnu/sv-bug-27563-execdir.xo and
++	find.posix/sv-bug-27563-exec.xo.
++	* find/testsuite/find.gnu/sv-bug-27563-execdir.exp: New test.
++	* find/testsuite/find.posix/sv-bug-27563-exec.exp: New test.
++	* find/testsuite/find.gnu/sv-bug-27563-execdir.xo: Expected output.
++	* find/testsuite/find.posix/sv-bug-27563-exec.xo: Expected output.
++
++	Fix Savannah bug #27563, -L breaks -execdir.
++	* find/pred.c (mdir_name): New function, taken from newer gnulib.
++	(initialise_wd_for_exec): New function, factoring out part of the body
++	of record_exec_dir.
++	(record_exec_dir): If state.rel_pathname contains a /, extract the
++	directory part and initialise execp->wd_for_exec to point at that
++	directory.
++	(impl_pred_exec): Rename new_impl_pred_exec to impl_pred_exec.
++	Drop the prefix and pfxlen parameters.  Compute the base name of
++	the target and pass that to the bc_push_arg function instead of
++	state.rel_pathname.  Deal with state.rel_pathname being an
++	absolute path (e.g. find / -execdir...).  Introduce a new
++	variable, result, allowing us to free the buffer used for the base
++	name in the return path.
++	(pred_exec): Don't pass the prefix and the prefix length any more.
++	(pred_execdir): Likewise.
++	(pred_ok): Likewise.
++	(pred_okdir): Likewise.
++
++2010-04-10  James Youngman  <jay@gnu.org>
++
++	Fix Savannah bug #19593, -execdir .... {} + has suboptimal performance
++	* find/ftsfind.c (consider_visiting): Don't call
++	complete_pending_execdirs for every file we visit.
++	(find): Instead, call complete_pending_execdirs every time we
++	see a file which isn't at the same nesting level as the previous
++	file we saw.  This is an improvement but not optimal (since
++	descending into a subdirectory will cause us to issue an exec
++	before we've finished with the current directory).
++	* NEWS: Mention this change.
++
++	Exec predicates now store which directory they want to run in.
++	* lib/dircallback.c (run_in_dirfd): New name for old run_in_dir
++	function.
++	(run_in_dir): Like the old function of the same name, but now
++	takes an argument const struct saved_cwd *.
++	* lib/dircallback.h: Update declarations of run_in_dirfd and
++	run_in_dir.
++	* find/util.c: Include dircallback.h, xalloc.h, save-cwd.h.
++	(do_complete_pending_execdirs): Remove dir_fd parameter, since the
++	per-predicate data structures now indicate what directory they
++	need to be run in.  Instead of calling bc_do_exec directly, use a
++	callback 'exec_cb' that uses run_in_dir (which now takes a
++	saved_cwd* parameter instead of a file descriptor).
++	(do_exec): Called by do_complete_pending_execdirs, and simply uses
++	run_in_dir to call exec_cb, restoring the working directory
++	afterward.
++	(record_initial_cwd): New function, initialises the global
++	variable initial_wd.
++	(cleanup_initial_cwd): New function, cleans up the global variable
++	initial_wd.
++	(cleanup): Call cleanup_initial_cwd.
++	(get_start_dirfd): Remove.
++	(is_exec_in_local_dir): New function; true for predicates -execdir
++	and -okdir.
++	* find/pred.c: Include save-cwd.h.
++	(record_exec_dir): New function, sets the value of
++	execp->wd_for_exec if needed.
++	(new_impl_pred_exec): Remove the obsolete dir_fd parameter.  Call
++	record_exec_dir.
++	(pred_exec): Don't pass the dir_fd parameter.
++	(pred_execdir): Likewise.
++	(pred_ok): Likewise.
++	(pred_okdir): Likewise.
++	(can_access): Call run_in_dirfd rather than run_in_dir (the
++	function was renamed).
++	(prep_child_for_exec): Remove dir_fd parameter; don't fchdir to
++	that.  Call restore_cwd instead (passing a saved_cwd* parameter
++	which replaced dir_fd).
++	(launch): Remove references to execp->use_current_dir.
++	(launch): Change references to execp->dir_fd to execp->wd_for_exec.
++	* find/parser.c: Correct indentiation of declaration of
++	insert_exec_ok and remove the obsolete dir_fd parameter.
++	(parse_exec): Don't pass the dir_fd parameter to insert_exec_ok.
++	(parse_execdir): Likewise.
++	(parse_ok): Likewise.
++	(parse_okdir): Likewise.
++	(insert_exec_ok): Remove obsolete dir_fd paramter.  Initialise
++	execp->wd_for_exec, either to NULL (for -*dir) or to the
++	initial_wd.
++	* find/ftsfind.c: Remove get_current_dirfd.  Remove
++	complete_execdirs_cb.
++	(consider_visiting): Call complete_pending_execdirs directly.
++	(main): Call record_initial_cwd to record the initial working
++	directory, early on.  Don't initialise starting_dir or
++	starting_desc, they have been removed.
++	* find/finddata.c: Include save-cwd.h.  Remove starting_dir and
++	starting_desc. Add new global variable initial_wd.  It is a struct
++	saved_wd* and represents find's initial working directory.
++	* find/find.c: Include save-cwd.h.
++	(main): Call record_initial_cwd in order to initialise the
++	global variable initial_wd  Don't set starting_desc and
++	starting_dir, since those variables have been removed.
++	(safely_chdir): Don't pass an fd to complete_pending_execdirs.
++	(chdir_back): Remove the safety check (since we are using fchdir
++	and in any case no longer have all the data that the existing
++	wd_sanity_check function wants).
++	(do_process_top_dir): Don't pass an fd to
++	complete_pending_execdirs.
++	(process_dir): Likewise.
++	* find/defs.h (struct exec_val): Remove use_current_dir and
++	dir_fd.  Replace with wd_for_exec, which is a struct saved_wd*.
++	(get_start_dirfd): Remove prototype.
++	(get_current_dirfd): Remove prototype.
++	(complete_pending_execdirs): No longer takes dir_fd parameter.
++	(record_initial_cwd): Add prototype.
++	(is_exec_in_local_dir): Add prototype.
++	(options): Declare.
++	(initial_wd): Add declaration.  It is a struct saved_wd* and
++	represents find's initial working directory.
++	(starting_dir): Remove declaration of global variable.
++	(starting_desc): Remove declaration of global variable.
++	* import-gnulib.config (modules): Import module save-cwd.
++
++	Add a test which checks $CWD for find -execdir {} +/;
++	* find/testsuite/find.gnu/execdir-multiple.exp: New test; verifies
++	that for -execdir +, all the execs occur with the correct working
++	directory.
++	* find/testsuite/find.gnu/execdir-multiple.xo: Expected output for
++	this test.
++	* find/testsuite/Makefile.am (EXTRA_DIST_EXP): Add the new test.
++	(EXTRA_DIST_XO): Add the expected output file.
++	* find/testsuite/config/unix.exp (mkdir): Create proc "mkdir"
++	which creates a directory.
++	* find/testsuite/find.gnu/execdir-pwd1.exp: New test.
++	* find/testsuite/Makefile.am (EXTRA_DIST_EXP): Add
++	execdir-pwd1.exp.
++
+ 2009-05-16  James Youngman  <jay@gnu.org>
+ 
+ 	Apply typo fix from <petrosyan@gmail.com> (tiny change).
+diff --git a/NEWS b/NEWS
+index d00862f..3742a1e 100644
+--- a/NEWS
++++ b/NEWS
+@@ -1,5 +1,24 @@
+ GNU findutils NEWS - User visible changes.	-*- outline -*- (allout)
+ 
++* Major changes in release 4.4.3-git, YYYY-MM-DD
++
++** Bug Fixes
++
++#29949: find -execdir does not change working directory
++
++#27563: -L breaks -execdir
++
++#19593: -execdir .... {} + has suboptimal performance (see below)
++
++** Performance changes
++
++The find program will once again build argument lists longer than 1
++with "-execdir ...+".  The upper limit of 1 argument for execdir was
++introduced as a workaround in findutils-4.3.4.   The limit is now
++removed, but find still does not issue the maximum possible number of
++arguments, since an exec will occur each time find encounters a
++subdirectory (if at least one argument is pending).
++
+ * Major changes in release 4.4.2, 2009-05-16
+ 
+ ** Bug Fixes
+diff --git a/find/defs.h b/find/defs.h
+index 71d4375..f7c6956 100644
+--- a/find/defs.h
++++ b/find/defs.h
+@@ -198,9 +198,8 @@ struct exec_val
+   struct buildcmd_state   state;
+   char **replace_vec;		/* Command arguments (for ";" style) */
+   int num_args;
+-  boolean use_current_dir;      /* If nonzero, don't chdir to start dir */
+   boolean close_stdin;		/* If true, close stdin in the child. */
+-  int dir_fd;			/* The directory to do the exec in. */
++  struct saved_cwd *wd_for_exec;/* What directory to perform the exec in. */
+ };
+ 
+ /* The format string for a -printf or -fprintf is chopped into one or
+@@ -341,8 +340,6 @@ struct predicate
+ 
+ /* find.c, ftsfind.c */
+ boolean is_fts_enabled(int *ftsoptions);
+-int get_start_dirfd(void);
+-int get_current_dirfd(void);
+ 
+ /* find library function declarations.  */
+ 
+@@ -499,8 +496,11 @@ struct predicate *insert_primary_withpred PARAMS((const struct parser_table *ent
+ void usage PARAMS((FILE *fp, int status, char *msg));
+ extern boolean check_nofollow(void);
+ void complete_pending_execs(struct predicate *p);
+-void complete_pending_execdirs(int dir_fd); /* Passing dir_fd is an unpleasant CodeSmell. */
++void complete_pending_execdirs(void);
+ const char *safely_quote_err_filename (int n, char const *arg);
++void record_initial_cwd (void);
++boolean is_exec_in_local_dir(const PRED_FUNC pred_func);
++
+ void fatal_file_error(const char *name) ATTRIBUTE_NORETURN;
+ void nonfatal_file_error(const char *name);
+ 
+@@ -667,10 +667,10 @@ struct state
+ };
+ 
+ /* finddata.c */
++extern struct options options;
+ extern struct state state;
+-extern char const *starting_dir;
+-extern int starting_desc;
+ extern char *program_name;
++extern struct saved_cwd *initial_wd;
+ 
+ 
+ #endif
+diff --git a/find/find.c b/find/find.c
+index 8aebeb8..456e0c6 100644
+--- a/find/find.c
++++ b/find/find.c
+@@ -52,6 +52,7 @@
+ #include "quotearg.h"
+ #include "xgetcwd.h"
+ #include "error.h"
++#include "save-cwd.h"
+ 
+ #ifdef HAVE_LOCALE_H
+ #include <locale.h>
+@@ -161,6 +162,8 @@ main (int argc, char **argv)
+   program_name = argv[0];
+   state.exit_status = 0;
+ 
++  record_initial_cwd ();
++
+   /* Set the option defaults before we do the locale
+    * initialisation as check_nofollow() needs to be executed in the
+    * POSIX locale.
+@@ -213,23 +216,6 @@ main (int argc, char **argv)
+     }
+   
+ 
+-  starting_desc = open (".", O_RDONLY
+-#if defined O_LARGEFILE
+-			|O_LARGEFILE
+-#endif
+-			);
+-  if (0 <= starting_desc && fchdir (starting_desc) != 0)
+-    {
+-      close (starting_desc);
+-      starting_desc = -1;
+-    }
+-
+-  if (starting_desc < 0)
+-    {
+-      starting_dir = xgetcwd ();
+-      if (! starting_dir)
+-	error (1, errno, _("cannot get current directory"));
+-    }
+   set_stat_placeholders(&starting_stat_buf);
+   if ((*options.xstat) (".", &starting_stat_buf) != 0)
+     error (1, errno, _("cannot stat current directory"));
+@@ -906,7 +892,7 @@ safely_chdir(const char *dest,
+    * processed, do them now because they must be done in the same
+    * directory.
+    */
+-  complete_pending_execdirs(get_current_dirfd());
++  complete_pending_execdirs ();
+ 
+ #if !defined(O_NOFOLLOW)
+   options.open_nofollow_available = false;
+@@ -941,45 +927,10 @@ safely_chdir(const char *dest,
+ static void
+ chdir_back (void)
+ {
+-  struct stat stat_buf;
+-  boolean dummy;
+-  
+-  if (starting_desc < 0)
+-    {
+-      if (options.debug_options & DebugSearch)
+-	fprintf(stderr, "chdir_back(): chdir(\"%s\")\n", starting_dir);
+-      
+-#ifdef STAT_MOUNTPOINTS
+-      /* We will need the mounted device list.  Get it now if we don't
+-       * already have it.
+-       */
+-      if (NULL == mounted_devices)
+-	init_mounted_dev_list(1);
+-#endif
+-      
+-      if (chdir (starting_dir) != 0)
+-	fatal_file_error(starting_dir);
+-
+-      wd_sanity_check(starting_dir,
+-		      program_name,
+-		      starting_dir,
+-		      starting_stat_buf.st_dev,
+-		      starting_stat_buf.st_ino,
+-		      &stat_buf, 0, __LINE__,
+-		      TraversingUp,
+-		      FATAL_IF_SANITY_CHECK_FAILS,
+-		      &dummy);
+-    }
+-  else
+-    {
+-      if (options.debug_options & DebugSearch)
+-	fprintf(stderr, "chdir_back(): chdir(<starting-point>)\n");
++  if (options.debug_options & DebugSearch)
++    fprintf (stderr, "chdir_back(): chdir to start point\n");
+ 
+-      if (fchdir (starting_desc) != 0)
+-	{
+-	  fatal_file_error(starting_dir);
+-	}
+-    }
++  restore_cwd (initial_wd);
+ }
+ 
+ /* Move to the parent of a given directory and then call a function,
+@@ -1068,7 +1019,7 @@ static void do_process_top_dir(char *pathname,
+   (void) pstat;
+   
+   process_path (pathname, base, false, ".", mode);
+-  complete_pending_execdirs(get_current_dirfd());
++  complete_pending_execdirs ();
+ }
+ 
+ static void do_process_predicate(char *pathname,
+@@ -1356,7 +1307,7 @@ process_dir (char *pathname, char *name, int pathlen, const struct stat *statp,
+        * yet been processed, do them now because they must be done in
+        * the same directory.
+        */
+-      complete_pending_execdirs(get_current_dirfd());
++      complete_pending_execdirs ();
+       
+       if (strcmp (name, "."))
+ 	{
+@@ -1494,7 +1445,7 @@ process_dir (char *pathname, char *name, int pathlen, const struct stat *statp,
+        * yet been processed, do them now because they must be done in
+        * the same directory.
+        */
+-      complete_pending_execdirs(get_current_dirfd()); 
++      complete_pending_execdirs (); 
+ 
+       if (strcmp (name, "."))
+ 	{
+diff --git a/find/finddata.c b/find/finddata.c
+index 373eb38..dcc8261 100644
+--- a/find/finddata.c
++++ b/find/finddata.c
+@@ -19,6 +19,7 @@
+ #include <config.h>
+ 
+ #include "defs.h"
++#include "save-cwd.h"
+ 
+ 
+ /* Name this program was run with. */
+@@ -26,13 +27,4 @@ char *program_name;
+ 
+ struct options options;
+ struct state state;
+-
+-/* The full path of the initial working directory, or "." if
+-   STARTING_DESC is nonnegative.  */
+-char const *starting_dir = ".";
+-
+-/* A file descriptor open to the initial working directory.
+-   Doing it this way allows us to work when the i.w.d. has
+-   unreadable parents.  */
+-int starting_desc;
+-
++struct saved_cwd *initial_wd = NULL;
+diff --git a/find/ftsfind.c b/find/ftsfind.c
+index 838b81f..3c9ae1d 100644
+--- a/find/ftsfind.c
++++ b/find/ftsfind.c
+@@ -98,24 +98,6 @@ static int ftsoptions = FTS_NOSTAT|FTS_TIGHT_CYCLE_CHECK;
+ static int prev_depth = INT_MIN; /* fts_level can be < 0 */
+ static int curr_fd = -1;
+ 
+-int get_current_dirfd(void)
+-{
+-  if (ftsoptions & FTS_CWDFD)
+-    {
+-      assert (curr_fd != -1);
+-      assert ( (AT_FDCWD == curr_fd) || (curr_fd >= 0) );
+-      
+-      if (AT_FDCWD == curr_fd)
+-	return starting_desc;
+-      else
+-	return curr_fd;
+-    }
+-  else
+-    {
+-      return AT_FDCWD;
+-    }
+-}
+-
+ static void left_dir(void)
+ {
+   if (ftsoptions & FTS_CWDFD)
+@@ -324,15 +306,6 @@ symlink_loop(const char *name)
+ }
+ 
+   
+-static int
+-complete_execdirs_cb(void *context)
+-{
+-  (void) context;
+-  /* By the tme this callback is called, the current directory is correct. */
+-  complete_pending_execdirs(AT_FDCWD);
+-  return 0;
+-}
+-
+ static void
+ show_outstanding_execdirs(FILE *fp)
+ {
+@@ -551,24 +524,6 @@ consider_visiting(FTS *p, FTSENT *ent)
+       visit(p, ent, &statbuf);
+     }
+ 
+-  /* XXX: if we allow a build-up of pending arguments for "-execdir foo {} +" 
+-   * we need to execute them in the same directory as we found the item.  
+-   * If we are trying to do "find a -execdir echo {} +", we will need to 
+-   * echo 
+-   *      a while in the original working directory
+-   *      b while in a
+-   *      c while in b (just before leaving b)
+-   *
+-   * These restrictions are hard to satisfy while using fts().   The reason is
+-   * that it doesn't tell us just before we leave a directory.  For the moment, 
+-   * we punt and don't allow the arguments to build up.
+-   */
+-  if (state.execdirs_outstanding)
+-    {
+-      show_outstanding_execdirs(stderr);
+-      run_in_dir(p->fts_cwd_fd, complete_execdirs_cb, NULL);
+-    }
+-
+   if (ent->fts_info == FTS_DP)
+     {
+       /* we're leaving a directory. */
+@@ -618,8 +573,27 @@ find(char *arg)
+     }
+   else
+     {
++      int level = INT_MIN;
++
+       while ( (ent=fts_read(p)) != NULL )
+ 	{
++	  if (state.execdirs_outstanding)
++	    {
++	      /* If we changed level, perform any outstanding
++	       * execdirs.  If we see a sequence of directory entries
++	       * like this: fffdfffdfff, we could build a command line
++	       * of 9 files, but this simple-minded implementation
++	       * builds a command line for only 3 files at a time
++	       * (since fts descends into the directories).
++	       */
++	      if ((int)ent->fts_level != level)
++		{
++		  show_outstanding_execdirs (stderr);
++		  complete_pending_execdirs ();
++		}
++	    }
++	  level = (int)ent->fts_level;
++
+ 	  state.have_stat = false;
+ 	  state.have_type = false;
+ 	  state.type = 0;
+@@ -670,6 +644,8 @@ main (int argc, char **argv)
+   state.execdirs_outstanding = false;
+   state.cwd_dir_fd = AT_FDCWD;
+ 
++  record_initial_cwd ();
++
+   /* Set the option defaults before we do the locale initialisation as
+    * check_nofollow() needs to be executed in the POSIX locale.
+    */
+@@ -719,24 +695,6 @@ main (int argc, char **argv)
+     }
+   
+ 
+-  starting_desc = open (".", O_RDONLY
+-#if defined O_LARGEFILE
+-			|O_LARGEFILE
+-#endif
+-			);
+-  if (0 <= starting_desc && fchdir (starting_desc) != 0)
+-    {
+-      close (starting_desc);
+-      starting_desc = -1;
+-    }
+-  if (starting_desc < 0)
+-    {
+-      starting_dir = xgetcwd ();
+-      if (! starting_dir)
+-	error (1, errno, _("cannot get current directory"));
+-    }
+-
+-
+   process_all_startpoints(argc-end_of_leading_options, argv+end_of_leading_options);
+   
+   /* If "-exec ... {} +" has been used, there may be some 
+diff --git a/find/parser.c b/find/parser.c
+index 51afad5..9ab972e 100644
+--- a/find/parser.c
++++ b/find/parser.c
+@@ -185,7 +185,6 @@ static struct segment **make_segment PARAMS((struct segment **segment,
+ 					     struct predicate *pred));
+ static boolean insert_exec_ok PARAMS((const char *action,
+ 				      const struct parser_table *entry,
+-				      int dir_fd,
+ 				      char *argv[],
+ 				      int *arg_ptr));
+ static boolean get_comp_type PARAMS((const char **str,
+@@ -943,13 +942,13 @@ parse_empty (const struct parser_table* entry, char **argv, int *arg_ptr)
+ static boolean
+ parse_exec (const struct parser_table* entry, char **argv, int *arg_ptr)
+ {
+-  return insert_exec_ok ("-exec", entry, get_start_dirfd(), argv, arg_ptr);
++  return insert_exec_ok ("-exec", entry, argv, arg_ptr);
+ }
+ 
+ static boolean
+ parse_execdir (const struct parser_table* entry, char **argv, int *arg_ptr)
+ {
+-  return insert_exec_ok ("-execdir", entry, -1, argv, arg_ptr);
++  return insert_exec_ok ("-execdir", entry, argv, arg_ptr);
+ }
+ 
+ static boolean
+@@ -1807,13 +1806,13 @@ parse_nowarn (const struct parser_table* entry, char **argv, int *arg_ptr)
+ static boolean
+ parse_ok (const struct parser_table* entry, char **argv, int *arg_ptr)
+ {
+-  return insert_exec_ok ("-ok", entry, get_start_dirfd(), argv, arg_ptr);
++  return insert_exec_ok ("-ok", entry, argv, arg_ptr);
+ }
+ 
+ static boolean
+ parse_okdir (const struct parser_table* entry, char **argv, int *arg_ptr)
+ {
+-  return insert_exec_ok ("-okdir", entry, -1, argv, arg_ptr);
++  return insert_exec_ok ("-okdir", entry, argv, arg_ptr);
+ }
+ 
+ boolean
+@@ -3174,11 +3173,10 @@ check_path_safety(const char *action, char **argv)
+ 
+ /* handles both exec and ok predicate */
+ static boolean
+-new_insert_exec_ok (const char *action,
+-		    const struct parser_table *entry,
+-		    int dir_fd,
+-		    char **argv,
+-		    int *arg_ptr)
++insert_exec_ok (const char *action,
++		const struct parser_table *entry,
++		char **argv,
++		int *arg_ptr)
+ {
+   int start, end;		/* Indexes in ARGV of start & end of cmd. */
+   int i;			/* Index into cmd args */
+@@ -3199,6 +3197,7 @@ new_insert_exec_ok (const char *action,
+   our_pred->need_type = our_pred->need_stat = false;
+ 
+   execp = &our_pred->args.exec_vec;
++  execp->wd_for_exec = NULL;
+ 
+   if ((func != pred_okdir) && (func != pred_ok))
+     {
+@@ -3218,13 +3217,14 @@ new_insert_exec_ok (const char *action,
+ 
+   if ((func == pred_execdir) || (func == pred_okdir))
+     {
++      execp->wd_for_exec = NULL;
+       options.ignore_readdir_race = false;
+       check_path_safety(action, argv);
+-      execp->use_current_dir = true;
+     }
+   else
+     {
+-      execp->use_current_dir = false;
++      assert (NULL != initial_wd);
++      execp->wd_for_exec = initial_wd;
+     }
+ 
+   our_pred->args.exec_vec.multiple = 0;
+@@ -3377,17 +3377,6 @@ new_insert_exec_ok (const char *action,
+ 
+ 
+ 
+-static boolean
+-insert_exec_ok (const char *action,
+-		const struct parser_table *entry,
+-		int dir_fd,
+-		char **argv,
+-		int *arg_ptr)
+-{
+-  return new_insert_exec_ok(action, entry, dir_fd, argv, arg_ptr);
+-}
+-
+-
+ 
+ /* Get a timestamp and comparison type.
+ 
+diff --git a/find/pred.c b/find/pred.c
+index e325a56..d6bbaea 100644
+--- a/find/pred.c
++++ b/find/pred.c
+@@ -47,6 +47,7 @@
+ #include "dircallback.h"
+ #include "error.h"
+ #include "verify.h"
++#include "save-cwd.h"
+ 
+ #ifdef WITH_SELINUX
+ #include <selinux/selinux.h>
+@@ -506,17 +507,145 @@ pred_empty (const char *pathname, struct stat *stat_buf, struct predicate *pred_
+     return (false);
+ }
+ 
++
++/* In general, we can't use the builtin `dirname' function if available,
++   since it has different meanings in different environments.
++   In some environments the builtin `dirname' modifies its argument.
++
++   Return the leading directories part of FILE, allocated with malloc.
++   Works properly even if there are trailing slashes (by effectively
++   ignoring them).  Return NULL on failure.
++
++   If lstat (FILE) would succeed, then { chdir (dir_name (FILE));
++   lstat (base_name (FILE)); } will access the same file.  Likewise,
++   if the sequence { chdir (dir_name (FILE));
++   rename (base_name (FILE), "foo"); } succeeds, you have renamed FILE
++   to "foo" in the same directory FILE was in.  */
++
++static char *
++mdir_name (char const *file)
++{
++  size_t length = dir_len (file);
++  bool append_dot = (length == 0
++                     || (FILE_SYSTEM_DRIVE_PREFIX_CAN_BE_RELATIVE
++                         && length == FILE_SYSTEM_PREFIX_LEN (file)
++                         && file[2] != '\0' && ! ISSLASH (file[2])));
++  char *dir = malloc (length + append_dot + 1);
++  if (!dir)
++    return NULL;
++  memcpy (dir, file, length);
++  if (append_dot)
++    dir[length++] = '.';
++  dir[length] = '\0';
++  return dir;
++}
++
++
++/* Initialise exec->wd_for_exec.
++
++   We save in exec->wd_for_exec the directory whose path relative to
++   cwd_df is dir.
++ */
+ static boolean
+-new_impl_pred_exec (int dir_fd, const char *pathname,
+-		    struct stat *stat_buf,
+-		    struct predicate *pred_ptr,
+-		    const char *prefix, size_t pfxlen)
++initialise_wd_for_exec (struct exec_val *execp, int cwd_fd, const char *dir)
++{
++  execp->wd_for_exec = xmalloc (sizeof (*execp->wd_for_exec));
++  execp->wd_for_exec->name = NULL;
++  execp->wd_for_exec->desc = openat (cwd_fd, dir, O_RDONLY);
++  if (execp->wd_for_exec->desc < 0)
++    return false;
++
++  return true;
++}
++
++
++static boolean
++record_exec_dir (struct exec_val *execp)
++{
++  /* working directory not already known, so must be a *dir variant,
++     and this must be the first arg we added.   However, this may
++     be -execdir foo {} \; (i.e. not multiple).  */
++  if (!execp->state.todo)
++    {
++      /* Record the WD. If we're using -L or fts chooses to do so for
++	 any other reason, state.cwd_dir_fd may in fact not be the
++	 directory containing the target file.  When this happens,
++	 rel_path will contain directory components (since it is the
++	 path from state.cwd_dir_fd to the target file).
++
++	 We deal with this by extracting any directory part and using
++	 that to adjust what goes into execp->wd_for_exec.
++      */
++      if (strchr (state.rel_pathname, '/'))
++	{
++	  char *dir = mdir_name (state.rel_pathname);
++	  bool result = initialise_wd_for_exec (execp, state.cwd_dir_fd, dir);
++	  free (dir);
++	  return result;
++	}
++      else
++	{
++	  return initialise_wd_for_exec (execp, state.cwd_dir_fd, ".");
++	}
++    }
++  return true;
++}
++
++
++static boolean
++impl_pred_exec (const char *pathname,
++		struct stat *stat_buf,
++		struct predicate *pred_ptr)
+ {
+   struct exec_val *execp = &pred_ptr->args.exec_vec;
+-  size_t len = strlen(pathname);
++  char *target;
++  bool result;
++  const bool local = is_exec_in_local_dir (pred_ptr->pred_func);
++  char *prefix;
++  size_t pfxlen;
+ 
+   (void) stat_buf;
+-  execp->dir_fd = dir_fd;
++
++  if (local)
++    {
++      /* For -execdir/-okdir predicates, the parser did not fill in
++	 the wd_for_exec member of sturct exec_val.  So for those
++	 predicates, we do so now.
++      */
++      if (!record_exec_dir (execp))
++	{
++	  error (EXIT_FAILURE, errno,
++		 _("Failed to save working directory in order to "
++		   "run a command on %s"),
++		 safely_quote_err_filename (0, pathname));
++	  /*NOTREACHED*/
++	}
++      target = base_name (state.rel_pathname);
++      if ('/' == target[0])
++	{
++	  /* find / execdir ls -d {} \; */
++	  prefix = NULL;
++	  pfxlen = 0;
++	}
++      else
++	{
++	  prefix = "./";
++	  pfxlen = 2u;
++	}
++    }
++  else
++    {
++      /* For the others (-exec, -ok), the parser should
++	 have set wd_for_exec to initial_wd, indicating
++	 that the exec should take place from find's initial
++	 working directory.
++      */
++      assert (execp->wd_for_exec == initial_wd);
++      target = (char *) pathname;
++      prefix = NULL;
++      pfxlen = 0u;
++    }
++
+   if (execp->multiple)
+     {
+       /* Push the argument onto the current list.
+@@ -525,7 +654,7 @@ new_impl_pred_exec (int dir_fd, const char *pathname,
+        */
+       bc_push_arg(&execp->ctl,
+ 		  &execp->state,
+-		  pathname, len+1,
++		  target, strlen (target)+1,
+ 		  prefix, pfxlen,
+ 		  0);
+ 
+@@ -535,7 +664,7 @@ new_impl_pred_exec (int dir_fd, const char *pathname,
+       /* POSIX: If the primary expression is punctuated by a plus
+        * sign, the primary shall always evaluate as true
+        */
+-      return true;
++      result = true;
+     }
+   else
+     {
+@@ -548,32 +677,34 @@ new_impl_pred_exec (int dir_fd, const char *pathname,
+ 		       execp->replace_vec[i],
+ 		       strlen(execp->replace_vec[i]),
+ 		       prefix, pfxlen,
+-		       pathname, len,
++		       target, strlen (target),
+ 		       0);
+ 	}
+ 
+       /* Actually invoke the command. */
+-      return  execp->ctl.exec_callback(&execp->ctl,
++      result = execp->ctl.exec_callback(&execp->ctl,
+ 					&execp->state);
+     }
++  if (target != pathname)
++    {
++      assert (local);
++      free (target);
++    }
++  return result;
+ }
+ 
+ 
+ boolean
+ pred_exec (const char *pathname, struct stat *stat_buf, struct predicate *pred_ptr)
+ {
+-  return new_impl_pred_exec(get_start_dirfd(),
+-			    pathname, stat_buf, pred_ptr, NULL, 0);
++  return impl_pred_exec(pathname, stat_buf, pred_ptr);
+ }
+ 
+ boolean
+ pred_execdir (const char *pathname, struct stat *stat_buf, struct predicate *pred_ptr)
+ {
+-   const char *prefix = (state.rel_pathname[0] == '/') ? NULL : "./";
+    (void) &pathname;
+-   return new_impl_pred_exec (get_current_dirfd(),
+-			      state.rel_pathname, stat_buf, pred_ptr,
+-			      prefix, (prefix ? 2 : 0));
++   return impl_pred_exec (state.rel_pathname, stat_buf, pred_ptr);
+ }
+ 
+ boolean
+@@ -1461,8 +1592,7 @@ boolean
+ pred_ok (const char *pathname, struct stat *stat_buf, struct predicate *pred_ptr)
+ {
+   if (is_ok(pred_ptr->args.exec_vec.replace_vec[0], pathname))
+-    return new_impl_pred_exec (get_start_dirfd(),
+-			       pathname, stat_buf, pred_ptr, NULL, 0);
++    return impl_pred_exec (pathname, stat_buf, pred_ptr);
+   else
+     return false;
+ }
+@@ -1470,11 +1600,8 @@ pred_ok (const char *pathname, struct stat *stat_buf, struct predicate *pred_ptr
+ boolean
+ pred_okdir (const char *pathname, struct stat *stat_buf, struct predicate *pred_ptr)
+ {
+-  const char *prefix = (state.rel_pathname[0] == '/') ? NULL : "./";
+   if (is_ok(pred_ptr->args.exec_vec.replace_vec[0], pathname))
+-    return new_impl_pred_exec (get_current_dirfd(),
+-			       state.rel_pathname, stat_buf, pred_ptr,
+-			       prefix, (prefix ? 2 : 0));
++    return impl_pred_exec (state.rel_pathname, stat_buf, pred_ptr);
+   else
+     return false;
+ }
+@@ -1574,7 +1701,7 @@ can_access(int access_type)
+   args.filename = state.rel_pathname;
+   args.access_type = access_type;
+   args.cb_errno = 0;
+-  return 0 == run_in_dir(state.cwd_dir_fd, access_callback, &args);
++  return 0 == run_in_dirfd (state.cwd_dir_fd, access_callback, &args);
+ }
+ 
+ 
+@@ -1919,7 +2046,7 @@ pred_context (const char *pathname, struct stat *stat_buf,
+ 
+ 
+ static boolean
+-prep_child_for_exec (boolean close_stdin, int dir_fd)
++prep_child_for_exec (boolean close_stdin, const struct saved_cwd *wd)
+ {
+   boolean ok = true;
+   if (close_stdin)
+@@ -1955,17 +2082,10 @@ prep_child_for_exec (boolean close_stdin, int dir_fd)
+    * announcement of a call to stat() anyway, as we're about to exec
+    * something.
+    */
+-  if (dir_fd != AT_FDCWD)
++  if (0 != restore_cwd (wd))
+     {
+-      assert (dir_fd >= 0);
+-      if (0 != fchdir(dir_fd))
+-	{
+-	  /* If we cannot execute our command in the correct directory,
+-	   * we should not execute it at all.
+-	   */
+-	  error(0, errno, _("Failed to change directory"));
+-	  ok = false;
+-	}
++      error (0, errno, _("Failed to change directory"));
++      ok = false;
+     }
+   return ok;
+ }
+@@ -1981,13 +2101,6 @@ launch (const struct buildcmd_control *ctl,
+   static int first_time = 1;
+   const struct exec_val *execp = buildstate->usercontext;
+ 
+-  if (!execp->use_current_dir)
+-    {
+-      assert (starting_desc >= 0);
+-      assert (execp->dir_fd == starting_desc);
+-    }
+-
+-
+   /* Null terminate the arg list.  */
+   bc_push_arg (ctl, buildstate, (char *) NULL, 0, NULL, 0, false);
+ 
+@@ -2008,8 +2121,8 @@ launch (const struct buildcmd_control *ctl,
+   if (child_pid == 0)
+     {
+       /* We are the child. */
+-      assert (starting_desc >= 0);
+-      if (!prep_child_for_exec(execp->close_stdin, execp->dir_fd))
++      assert (NULL != execp->wd_for_exec);
++      if (!prep_child_for_exec (execp->close_stdin, execp->wd_for_exec))
+ 	{
+ 	  _exit(1);
+ 	}
+diff --git a/find/testsuite/Makefile.am b/find/testsuite/Makefile.am
+index dca30e6..aa32d4b 100644
+--- a/find/testsuite/Makefile.am
++++ b/find/testsuite/Makefile.am
+@@ -14,6 +14,7 @@ find.gnu/depth.xo \
+ find.gnu/depth-d.xo \
+ find.gnu/empty.xo \
+ find.gnu/execdir-hier.xo   \
++find.gnu/execdir-multiple.xo \
+ find.gnu/execdir-one.xo   \
+ find.gnu/execdir-root-only.xo   \
+ find.gnu/exec-many-rtn-failure.xo   \
+@@ -62,6 +63,7 @@ find.gnu/samefile-same.xo \
+ find.gnu/samefile-symlink.xo \
+ find.gnu/sv-bug-17782.xo \
+ find.gnu/sv-bug-18222.xo \
++find.gnu/sv-bug-27563-execdir.xo \
+ find.gnu/true.xo \
+ find.gnu/wholename.xo \
+ find.gnu/xtype-symlink.xo \
+@@ -77,6 +79,7 @@ find.posix/grouping.xo \
+ find.posix/links.xo \
+ find.posix/sv-bug-11175.xo \
+ find.posix/sv-bug-12181.xo \
++find.posix/sv-bug-27563-exec.xo \
+ find.posix/depth1.xo \
+ find.posix/mtime0.xo \
+ find.posix/sizes.xo \
+@@ -114,8 +117,10 @@ find.gnu/depth-d.exp \
+ find.gnu/empty.exp \
+ find.gnu/execdir-hier.exp \
+ find.gnu/execdir-in-unreadable.exp \
++find.gnu/execdir-multiple.exp \
+ find.gnu/execdir-one.exp \
+ find.gnu/execdir-pwd.exp \
++find.gnu/execdir-pwd1.exp \
+ find.gnu/execdir-root-only.exp \
+ find.gnu/exec-many-rtn-failure.exp  \
+ find.gnu/exec-many-rtn-success.exp  \
+@@ -176,6 +181,7 @@ find.gnu/sv-bug-17490.exp \
+ find.gnu/sv-bug-17782.exp \
+ find.gnu/sv-bug-18222.exp \
+ find.gnu/sv-bug-24169.exp \
++find.gnu/sv-bug-27563-execdir.exp \
+ find.gnu/quit.exp \
+ find.gnu/used-invarg.exp \
+ find.gnu/used-missing.exp \
+@@ -196,6 +202,7 @@ find.posix/links.exp \
+ find.posix/mtime0.exp \
+ find.posix/sv-bug-11175.exp \
+ find.posix/sv-bug-12181.exp \
++find.posix/sv-bug-27563-exec.exp \
+ find.posix/depth1.exp \
+ find.posix/sizes.exp \
+ find.posix/name.exp \
+diff --git a/find/testsuite/config/unix.exp b/find/testsuite/config/unix.exp
+index 087aeb2..968eb9d 100644
+--- a/find/testsuite/config/unix.exp
++++ b/find/testsuite/config/unix.exp
+@@ -259,6 +259,15 @@ proc touch args {
+     }
+ }
+ 
++proc mkdir { dirname } {
++    # Not all versions of Tcl offer 'file mkdir'.
++    set failed [ catch "file mkdir $dirname" result ]
++    if $failed {
++	# Fall back on the external command.
++	send_log "file mkdir does not work, falling back on exec mkdir\n"
++	exec mkdir "$dirname"
++    }
++}
+ 
+ 
+ proc safe_path [ ] {
+diff --git a/find/testsuite/find.gnu/execdir-multiple.exp b/find/testsuite/find.gnu/execdir-multiple.exp
+new file mode 100644
+index 0000000..495b93b
+--- /dev/null
++++ b/find/testsuite/find.gnu/execdir-multiple.exp
+@@ -0,0 +1,56 @@
++# tests for -execdir ... \+
++
++# Create 4 empty files in each of 6 directories.
++# Also create a shell script in each of those 6 directories.
++# Run a find command which runs the shell script for each empty file.
++# Check to make sure that each file is mentioned exactly once, and that
++# the command was run with the correct working directory.
++#
++# The output is a sequence of lines of this form:
++#
++# cwd ./basename
++#
++# cmd is the basename of the current directory at the time the command
++# is run by -execidr.   ./basename is the name of the file that was matched
++# (that is, it's the value passed in {}).
++
++# $body is the body of a shell script we use for testing.
++# It prints a series of lines of the form described above.
++# One line is printed for each command-line argument.
++set body {#! /bin/sh
++set -e
++here=`pwd`
++d=`basename $here`
++
++for arg;
++do
++  echo "$d" "$arg"
++done | LC_ALL=C sort
++}
++
++
++if { [ safe_path ] } {
++    global SKIP_OLD
++
++    exec rm -rf tmp
++    mkdir tmp
++
++    # Put a copy of our shell script in each
++    # directory, plus some files.
++    foreach dir { a b c d e f } {
++	mkdir "tmp/$dir"
++	set script_name "tmp/$dir/runme"
++	set f [open "$script_name" "w" 0700 ]
++	puts $f "$body"
++	close $f
++	foreach item { one two three four } {
++	    touch "tmp/$dir/$item"
++	}
++    }
++
++    set SKIP_OLD 1
++    find_start p {tmp -type f -empty -execdir sh ./runme \{\} \; } ""
++    find_start p {tmp -type f -empty -execdir sh ./runme  \{\} + } ""
++    set SKIP_OLD 0
++    exec rm -rf tmp
++}
+diff --git a/find/testsuite/find.gnu/execdir-multiple.xo b/find/testsuite/find.gnu/execdir-multiple.xo
+new file mode 100644
+index 0000000..a4f93d9
+--- /dev/null
++++ b/find/testsuite/find.gnu/execdir-multiple.xo
+@@ -0,0 +1,24 @@
++a ./one
++a ./two
++a ./three
++a ./four
++b ./one
++b ./two
++b ./three
++b ./four
++c ./one
++c ./two
++c ./three
++c ./four
++d ./one
++d ./two
++d ./three
++d ./four
++e ./one
++e ./two
++e ./three
++e ./four
++f ./one
++f ./two
++f ./three
++f ./four
+diff --git a/find/testsuite/find.gnu/execdir-pwd1.exp b/find/testsuite/find.gnu/execdir-pwd1.exp
+new file mode 100644
+index 0000000..e9863ac
+--- /dev/null
++++ b/find/testsuite/find.gnu/execdir-pwd1.exp
+@@ -0,0 +1,20 @@
++# tests for working directory of -execdir {} \;
++if { [ safe_path ] } {
++    global SKIP_OLD
++
++    exec rm -rf tmp
++    exec mkdir tmp
++
++    # Create an empty shell script.
++    exec touch    tmp/foo
++    exec chmod +x tmp/foo
++
++    # The -execdir should find the "foo" in the current directory.
++    # If not, the find command is probably executing the command
++    # built up by -execdir in the wrong directory.
++
++    set SKIP_OLD 1
++    find_start p {tmp -name foo -execdir sh ./foo  \{\} \; } ""
++    set SKIP_OLD 0
++    exec rm -rf tmp
++}
+diff --git a/find/testsuite/find.gnu/sv-bug-27563-execdir.exp b/find/testsuite/find.gnu/sv-bug-27563-execdir.exp
+new file mode 100644
+index 0000000..c67fc88
+--- /dev/null
++++ b/find/testsuite/find.gnu/sv-bug-27563-execdir.exp
+@@ -0,0 +1,6 @@
++# tests for Savannah bug 27563 (result of find -L -exec ls {} \;)
++exec rm -rf tmp
++exec mkdir tmp
++exec touch tmp/yyyy
++find_start p {-L tmp -name yyyy -execdir ls \{\} \; }
++exec rm -rf tmp
+diff --git a/find/testsuite/find.gnu/sv-bug-27563-execdir.xo b/find/testsuite/find.gnu/sv-bug-27563-execdir.xo
+new file mode 100644
+index 0000000..285260b
+--- /dev/null
++++ b/find/testsuite/find.gnu/sv-bug-27563-execdir.xo
+@@ -0,0 +1 @@
++./yyyy
+diff --git a/find/testsuite/find.posix/sv-bug-27563-exec.exp b/find/testsuite/find.posix/sv-bug-27563-exec.exp
+new file mode 100644
+index 0000000..d18b0c1
+--- /dev/null
++++ b/find/testsuite/find.posix/sv-bug-27563-exec.exp
+@@ -0,0 +1,6 @@
++# tests for Savannah bug 27563 (result of find -L -exec ls {} \;)
++exec rm -rf tmp
++exec mkdir tmp
++exec touch tmp/yyyy
++find_start p {-L tmp -name yyyy -exec ls \{\} \; }
++exec rm -rf tmp
+diff --git a/find/testsuite/find.posix/sv-bug-27563-exec.xo b/find/testsuite/find.posix/sv-bug-27563-exec.xo
+new file mode 100644
+index 0000000..cd491dd
+--- /dev/null
++++ b/find/testsuite/find.posix/sv-bug-27563-exec.xo
+@@ -0,0 +1 @@
++tmp/yyyy
+diff --git a/find/util.c b/find/util.c
+index d3cb467..da4fc62 100644
+--- a/find/util.c
++++ b/find/util.c
+@@ -36,6 +36,9 @@
+ #include "error.h"
+ #include "verify.h"
+ #include "openat.h"
++#include "dircallback.h"
++#include "xalloc.h"
++#include "save-cwd.h"
+ 
+ #if ENABLE_NLS
+ # include <libintl.h>
+@@ -282,6 +285,26 @@ check_nofollow(void)
+ #endif
+ 
+ 
++static int
++exec_cb (void *context)
++{
++  struct exec_val *execp = context;
++  launch (&execp->ctl, &execp->state);
++  return 0;
++}
++
++static void
++do_exec (struct exec_val *execp)
++{
++  run_in_dir (execp->wd_for_exec, exec_cb, execp);
++  if (execp->wd_for_exec != initial_wd)
++    {
++      free_cwd (execp->wd_for_exec);
++      free (execp->wd_for_exec);
++      execp->wd_for_exec = NULL;
++    }
++}
++
+ 
+ /* Examine the predicate list for instances of -execdir or -okdir
+  * which have been terminated with '+' (build argument list) rather
+@@ -289,14 +312,14 @@ check_nofollow(void)
+  * have no effect if there are no arguments waiting).
+  */
+ static void
+-do_complete_pending_execdirs(struct predicate *p, int dir_fd)
++do_complete_pending_execdirs(struct predicate *p)
+ {
+   if (NULL == p)
+     return;
+   
+   assert (state.execdirs_outstanding);
+   
+-  do_complete_pending_execdirs(p->pred_left, dir_fd);
++  do_complete_pending_execdirs(p->pred_left);
+   
+   if (pred_is(p, pred_execdir) || pred_is(p, pred_okdir))
+     {
+@@ -311,25 +334,24 @@ do_complete_pending_execdirs(struct predicate *p, int dir_fd)
+ 	  if (execp->state.todo)
+ 	    {
+ 	      /* There are not-yet-executed arguments. */
+-	      launch (&execp->ctl, &execp->state);
++	      do_exec (execp);
+ 	    }
+ 	}
+     }
+ 
+-  do_complete_pending_execdirs(p->pred_right, dir_fd);
++  do_complete_pending_execdirs(p->pred_right);
+ }
+ 
+ void
+-complete_pending_execdirs(int dir_fd)
++complete_pending_execdirs (void)
+ {
+   if (state.execdirs_outstanding)
+     {
+-      do_complete_pending_execdirs(get_eval_tree(), dir_fd);
++      do_complete_pending_execdirs(get_eval_tree());
+       state.execdirs_outstanding = false;
+     }
+ }
+ 
+-
+ 
+ /* Examine the predicate list for instances of -exec which have been
+  * terminated with '+' (build argument list) rather than ';' (singles
+@@ -365,6 +387,37 @@ complete_pending_execs(struct predicate *p)
+ 
+   complete_pending_execs(p->pred_right);
+ }
++
++void
++record_initial_cwd (void)
++{
++  initial_wd = xmalloc (sizeof (*initial_wd));
++  if (0 != save_cwd (initial_wd))
++    {
++      error (EXIT_FAILURE, errno,
++	     _("failed to save initial working directory"));
++    }
++}
++
++static void
++cleanup_initial_cwd (void)
++{
++  if (0 == restore_cwd (initial_wd))
++    {
++      free_cwd (initial_wd);
++      free (initial_wd);
++      initial_wd = NULL;
++    }
++  else
++    {
++      /* since we may already be in atexit, die with _exit(). */
++      error (0, errno,
++	     _("failed to restore initial working directory"));
++      _exit (EXIT_FAILURE);
++    }
++}
++
++
+ 
+ static void
+ traverse_tree(struct predicate *tree,
+@@ -424,9 +477,11 @@ cleanup(void)
+   if (eval_tree)
+     {
+       traverse_tree(eval_tree, complete_pending_execs);
+-      complete_pending_execdirs(get_current_dirfd());
++      complete_pending_execdirs ();
+       traverse_tree(eval_tree, flush_and_close_output_files);
+     }
++
++  cleanup_initial_cwd ();
+ }
+ 
+ /* Savannah bug #16378 manifests as an assertion failure in pred_type()
+@@ -963,15 +1018,6 @@ set_option_defaults(struct options *p)
+ }
+ 
+ 
+-/* get_start_dirfd
+- *
+- * Returns the fd for the directory we started in.
+- */
+-int get_start_dirfd(void)
+-{
+-  return starting_desc;
+-}
+-
+ /* apply_predicate
+  *
+  */
+@@ -997,6 +1043,15 @@ apply_predicate(const char *pathname, struct stat *stat_buf, struct predicate *p
+     }
+ }
+ 
++/* is_exec_in_local_dir
++ *
++ */
++bool
++is_exec_in_local_dir (const PRED_FUNC pred_func)
++{
++  return pred_execdir == pred_func || pred_okdir == pred_func;
++}
++
+ 
+ /* safely_quote_err_filename
+  *
+diff --git a/import-gnulib.config b/import-gnulib.config
+index f2e8998..b1f0851 100644
+--- a/import-gnulib.config
++++ b/import-gnulib.config
+@@ -67,6 +67,7 @@ quotearg
+ realloc
+ regex
+ rpmatch
++save-cwd
+ savedir
+ stat-macros
+ stat-time
+diff --git a/lib/dircallback.c b/lib/dircallback.c
+index 5dbf3b3..f96fccc 100644
+--- a/lib/dircallback.c
++++ b/lib/dircallback.c
+@@ -54,7 +54,41 @@
+ 
+ 
+ int
+-run_in_dir (int dir_fd, int (*callback)(void*), void *usercontext)
++run_in_dir (const struct saved_cwd *there,
++	    int (*callback)(void*), void *usercontext)
++{
++  int err = -1;
++  int saved_errno = 0;
++  struct saved_cwd here;
++  if (0 == save_cwd (&here))
++    {
++      if (0 == restore_cwd (there))
++	{
++	  err = callback(usercontext);
++	  saved_errno = (err < 0 ? errno : 0);
++	}
++      else
++	{
++	  openat_restore_fail (errno);
++	}
++
++      if (restore_cwd (&here) != 0)
++	openat_restore_fail (errno);
++
++      free_cwd (&here);
++    }
++  else
++    {
++      openat_save_fail (errno);
++    }
++  if (saved_errno)
++    errno = saved_errno;
++  return err;
++}
++
++
++int
++run_in_dirfd (int dir_fd, int (*callback)(void*), void *usercontext)
+ {
+   if (dir_fd == AT_FDCWD)
+     {
+diff --git a/lib/dircallback.h b/lib/dircallback.h
+index 41ea282..3234113 100644
+--- a/lib/dircallback.h
++++ b/lib/dircallback.h
+@@ -19,6 +19,9 @@
+ #if !defined DIRCALLBACK_H
+ # define DIRCALLBACK_H
+ 
+-int run_in_dir (int dir_fd, int (*callback)(void*), void *usercontext);
++struct saved_cwd;
++
++int run_in_dirfd (int fd, int (*callback)(void*), void *usercontext);
++int run_in_dir (struct saved_cwd*, int (*callback)(void*), void *usercontext);
+ 
+ #endif
+diff --git a/lib/listfile.c b/lib/listfile.c
+index ca9eae2..b5bee54 100644
+--- a/lib/listfile.c
++++ b/lib/listfile.c
+@@ -424,7 +424,7 @@ get_link_name_at (const char *name, int dir_fd, char *relname)
+   args.result = NULL;
+   args.name = name;
+   args.relname = relname;
+-  if (0 == run_in_dir(dir_fd, get_link_name_cb, &args))
++  if (0 == run_in_dirfd (dir_fd, get_link_name_cb, &args))
+     return args.result;
+   else
+     return NULL;
+diff --git a/lib/savedirinfo.c b/lib/savedirinfo.c
+index be62b7f..3111e2f 100644
+--- a/lib/savedirinfo.c
++++ b/lib/savedirinfo.c
+@@ -265,7 +265,7 @@ new_savedirinfo (const char *dir, struct savedir_extrainfo **extra)
+   
+   if (p)
+     {
+-      struct savedir_extrainfo *pex = xmalloc(p->size * sizeof(*extra));
++      struct savedir_extrainfo *pex = xmalloc(p->size * sizeof(**extra));
+       for (i=0; i<p->size; ++i)
+ 	{
+ 	  bufbytes += strlen(p->entries[i].name);

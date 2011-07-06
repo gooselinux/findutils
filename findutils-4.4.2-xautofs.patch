@@ -1,0 +1,103 @@
+diff -rup findutils-4.4.2.orig/doc/find.texi findutils-4.4.2/doc/find.texi
+--- findutils-4.4.2.orig/doc/find.texi	2009-10-20 14:31:43.902741386 +0200
++++ findutils-4.4.2/doc/find.texi	2009-10-20 14:30:55.680178944 +0200
+@@ -1420,6 +1420,10 @@ them.
+ There are two ways to avoid searching certain filesystems.  One way is
+ to tell @code{find} to only search one filesystem:
+ 
++@deffn Option -xautofs
++Don't descend directories on autofs filesystems.
++@end deffn
++
+ @deffn Option -xdev
+ @deffnx Option -mount
+ Don't descend directories on other filesystems.  These options are
+diff -rup findutils-4.4.2.orig/find/defs.h findutils-4.4.2/find/defs.h
+--- findutils-4.4.2.orig/find/defs.h	2009-10-20 14:31:43.902741386 +0200
++++ findutils-4.4.2/find/defs.h	2009-10-20 14:30:55.680906690 +0200
+@@ -559,6 +559,9 @@ struct options
+   /* If true, don't cross filesystem boundaries. */
+   boolean stay_on_filesystem;
+   
++  /* If true, don't descend directories on autofs filesystems. */
++  boolean bypass_autofs;
++  
+   /* If true, we ignore the problem where we find that a directory entry 
+    * no longer exists by the time we get around to processing it.
+    */
+diff -rup findutils-4.4.2.orig/find/find.1 findutils-4.4.2/find/find.1
+--- findutils-4.4.2.orig/find/find.1	2009-10-20 14:31:43.903741308 +0200
++++ findutils-4.4.2/find/find.1	2009-10-20 14:30:55.680906690 +0200
+@@ -451,6 +451,9 @@ if standard input is a tty, and to 
+ .B \-nowarn
+ otherwise.
+ 
++.IP \-xautofs
++Don't descend directories on autofs filesystems.
++
+ .IP \-xdev
+ Don't descend directories on other filesystems.
+ 
+diff -rup findutils-4.4.2.orig/find/ftsfind.c findutils-4.4.2/find/ftsfind.c
+--- findutils-4.4.2.orig/find/ftsfind.c	2009-05-16 17:17:01.000000000 +0200
++++ findutils-4.4.2/find/ftsfind.c	2009-10-20 14:31:04.745866565 +0200
+@@ -525,6 +525,12 @@ consider_visiting(FTS *p, FTSENT *ent)
+ 	}
+     }
+ 
++  if (options.bypass_autofs &&
++      0 == strcmp ("autofs", filesystem_type (&statbuf, ent->fts_name)))
++    {
++      fts_set(p, ent, FTS_SKIP); /* descend no further */
++    }
++
+   if ( (ent->fts_info == FTS_D) && !options.do_dir_first )
+     {
+       /* this is the preorder visit, but user said -depth */ 
+diff -rup findutils-4.4.2.orig/find/parser.c findutils-4.4.2/find/parser.c
+--- findutils-4.4.2.orig/find/parser.c	2009-10-20 14:31:43.906741469 +0200
++++ findutils-4.4.2/find/parser.c	2009-10-20 14:30:55.683024396 +0200
+@@ -154,6 +154,7 @@ static boolean parse_user          PARAM
+ static boolean parse_version       PARAMS((const struct parser_table*, char *argv[], int *arg_ptr));
+ static boolean parse_wholename     PARAMS((const struct parser_table*, char *argv[], int *arg_ptr));
+ static boolean parse_xdev          PARAMS((const struct parser_table*, char *argv[], int *arg_ptr));
++static boolean parse_xautofs       PARAMS((const struct parser_table*, char *argv[], int *arg_ptr));
+ static boolean parse_ignore_race   PARAMS((const struct parser_table*, char *argv[], int *arg_ptr));
+ static boolean parse_noignore_race PARAMS((const struct parser_table*, char *argv[], int *arg_ptr));
+ static boolean parse_warn          PARAMS((const struct parser_table*, char *argv[], int *arg_ptr));
+@@ -330,6 +331,7 @@ static struct parser_table const parse_t
+   PARSE_TEST_NP    ("wholename",             wholename), /* GNU, replaced -path, but anyway -path will soon be in POSIX */
+   {ARG_TEST,       "writable",               parse_accesscheck, pred_writable}, /* GNU, 4.3.0+ */
+   PARSE_OPTION     ("xdev",                  xdev), /* POSIX */
++  PARSE_OPTION     ("xautofs",               xautofs),
+   PARSE_TEST       ("xtype",                 xtype),	     /* GNU */
+ #ifdef UNIMPLEMENTED_UNIX
+   /* It's pretty ugly for find to know about archive formats.
+@@ -2696,6 +2698,16 @@ parse_xdev (const struct parser_table* e
+ }
+ 
+ static boolean
++parse_xautofs (const struct parser_table* entry, char **argv, int *arg_ptr)
++{
++  (void) argv;
++  (void) arg_ptr;
++  (void) entry;
++  options.bypass_autofs = true;
++  return true;
++}
++
++static boolean
+ parse_ignore_race (const struct parser_table* entry, char **argv, int *arg_ptr)
+ {
+   options.ignore_readdir_race = true;
+diff -rup findutils-4.4.2.orig/find/util.c findutils-4.4.2/find/util.c
+--- findutils-4.4.2.orig/find/util.c	2009-05-16 17:17:01.000000000 +0200
++++ findutils-4.4.2/find/util.c	2009-10-20 14:30:55.684180119 +0200
+@@ -933,6 +933,7 @@ set_option_defaults(struct options *p)
+ 
+   p->full_days = false;
+   p->stay_on_filesystem = false;
++  p->bypass_autofs = false;
+   p->ignore_readdir_race = false;
+ 
+   if (p->posixly_correct)
